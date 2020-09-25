@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 # from torch_geometric.data import Data as PyGSingleGraphData
 from utils_mp import *
+from torch_geometric.nn import GCNConv
+from torch_geometric.nn.pool.topk_pool import topk,filter_adj
+from torch.nn import Parameter
 
 EPS = 1e-15
 
@@ -23,80 +26,147 @@ class Adaptive_Pooling_Layer(nn.Module):
     ### Output:[B,N_output,Dim_output]
     ###         B:batch size, N_output: number of output nodes, Dim_output: dimension of features of output nodes
 
-    def __init__(self, Heads, Dim_input, N_output, Dim_output, use_cuda, max_num_nodes=200, with_mask=False, Tau=1,
-                 linear_block=False, p2p=False):
+    def __init__(self, Heads, Dim_input, N_output, Dim_output, use_cuda):
         """
             Heads: number of memory heads
             N_input : number of nodes in input node set
             Dim_input: number of feature dimension of input nodes
             N_output : number of the downsampled output nodes
             Dim_output: number of feature dimension of output nodes
-            with_mask : with mask computed by adjacency matrix or not
-            Tau: parameter for the student t-distribution mentioned in the paper
-            linear_block : Whether use linear transformation between hierarchy blocks
         """
         super(Adaptive_Pooling_Layer, self).__init__()
         self.Heads = Heads
-        self.Tau = Tau
         self.Dim_input = Dim_input
         self.N_output = N_output
         self.Dim_output = Dim_output
-        self.with_mask = with_mask
-        self.linear_block = linear_block
-        self.p2p = p2p
-        self.max_num_nodes = max_num_nodes
-
         self.use_cuda = use_cuda
+
         if self.use_cuda:
             FLAGS.device = "cuda:0"
         else:
             FLAGS.device = "cpu"
-        # Randomly initialize centroids
-        self.centroids = \
-            nn.Parameter(2 * torch.rand(
-                self.Heads, self.N_output, Dim_input) - 1)
-        self.centroids.requires_grad = True
-        self.dropout_1 = torch.nn.Dropout(p=0.5)
-        if self.Heads * self.N_output // 8 > 0:
-            hiden_channels_1 = self.Heads * self.N_output // 8
-        else:
-            hiden_channels_1 = self.Heads
-        if self.use_cuda:
-            self.input2centroids_1_weight = torch.nn.Parameter(
-            torch.zeros(hiden_channels_1, 1).float()
-            .to(FLAGS.device), requires_grad=True)
-            self.input2centroids_1_bias = torch.nn.Parameter(torch.zeros(hiden_channels_1).float()
-                                                         .to(FLAGS.device), requires_grad=True)
-        else:
-            self.input2centroids_1_weight = torch.nn.Parameter(
-                torch.zeros(hiden_channels_1, 1).float(), requires_grad=True)
-            self.input2centroids_1_bias = torch.nn.Parameter(torch.zeros(hiden_channels_1).float(), requires_grad=True)
-        
-        if self.Heads * self.N_output//2 > 0:
-            hiden_channels_2 = self.Heads * self.N_output//2
-        else:
-            hiden_channels_2 = self.Heads
-        self.input2centroids_2 = nn.Sequential(nn.Linear(hiden_channels_1,hiden_channels_2),nn.ReLU())
-        self.input2centroids_3 = nn.Sequential(nn.Linear(hiden_channels_2, self.Heads * self.N_output),nn.ReLU())
-        self.input2centroids_4 = nn.Sequential(nn.Linear(self.Heads * self.N_output, self.Heads * self.N_output),
-                                               nn.ReLU())
-        self.input2centroids_5 = nn.Sequential(nn.Linear(self.Heads * self.N_output, self.Heads * self.N_output),
-                                               nn.ReLU())
 
+        # Randomly initialize centroids
+        self.centroids = nn.Parameter(2 * torch.rand(self.Heads, self.N_output, Dim_input) - 1)
+        self.centroids.requires_grad = True
+
+        hiden_channels = self.Heads
+        if self.use_cuda:
+            self.input2centroids_weight = torch.nn.Parameter(
+                torch.zeros(hiden_channels, 1).float().to(FLAGS.device), requires_grad=True)
+            self.input2centroids_bias = torch.nn.Parameter(
+                torch.zeros(hiden_channels).float().to(FLAGS.device), requires_grad=True)
+        else:
+            self.input2centroids_weight = torch.nn.Parameter(
+                torch.zeros(hiden_channels, 1).float(), requires_grad=True)
+            self.input2centroids_bias = torch.nn.Parameter(
+                torch.zeros(hiden_channels).float(), requires_grad=True)
 
         self.memory_aggregation = nn.Conv2d(self.Heads, 1, [1, 1])
-        self.bn_1 = torch.nn.BatchNorm2d(1)
+
         self.dim_feat_transformation = nn.Linear(self.Dim_input, self.Dim_output)
-        #self.relu = nn.tanh()
-        self.lrelu = nn.LeakyReLU()
+
         self.similarity_compute = torch.nn.CosineSimilarity(dim=4, eps=1e-6)
-        self.similarity_compute_1 = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+
         self.relu = nn.ReLU()
 
         self.emb_dim = Dim_input
         self.W_0 = glorot([self.emb_dim, self.emb_dim], self.use_cuda)
 
+    def forward(self, node_set, adj, zero_tensor=torch.tensor([0])):
+        """
+            node_set: Input node set in form of [batch_size, N_input, Dim_input]
+            adj: adjacency matrix for node set x in form of [batch_size, N_input, N_input]
+            zero_tensor: zero_tensor of size [1]
 
+            (1): new_node_set = LRelu(C*node_set*W)
+            (2): C = softmax(pixel_level_conv(C_heads))
+            (3): C_heads = t-distribution(node_set, centroids)
+            (4): W is a trainable linear transformation
+        """
+        node_set_input = node_set
+        batch_size, self.N_input, _ = node_set.size()
+
+        # batch_centroids = torch.mean(node_set,dim=1,keepdim=True)
+
+        batch_centroids = get_att(node_set,self.W_0,self.emb_dim,batch_size=batch_size)
+
+        batch_centroids = batch_centroids.permute(0, 2, 1)
+
+        batch_centroids = torch.relu(torch.nn.functional.linear(batch_centroids, self.input2centroids_weight, self.input2centroids_bias))
+
+        batch_centroids = batch_centroids.permute(0, 2, 1).view(node_set.size()[0], self.Heads, self.N_output,
+                                                                self.Dim_input)
+
+        # From initial node set [batch_size, N_input, Dim_input] to size [batch_size, Heads, N_output, N_input, Dim_input]
+        node_set = torch.unsqueeze(node_set, 1).repeat(1, batch_centroids.shape[1], 1, 1)
+        node_set = torch.unsqueeze(node_set, 2).repeat(1, 1, batch_centroids.shape[2], 1, 1)
+        # Broadcast centroids to the same size as that of node set [batch_size, Heads, N_output, N_input, Dim_input]
+        batch_centroids = torch.unsqueeze(batch_centroids, 3).repeat(1, 1, 1, node_set.shape[3], 1)
+
+        # Compute the distance between original node set to centroids
+        # [batch_size, Heads, N_output, N_input]
+        C_heads = self.similarity_compute(node_set, batch_centroids)
+
+        normalizer = torch.unsqueeze(torch.sum(C_heads, 2), 2)
+        C_heads = C_heads / (normalizer + 1e-10)
+
+        # Apply pixel-level convolution and softmax to C_heads
+        # Get C: [batch_size, N_output, N_input]
+        C = self.memory_aggregation(C_heads)
+        # C = torch.softmax(C,1)
+
+        C = C.squeeze(1)
+
+        # [batch_size, N_output, N_input] * [batch_size, N_input, Dim_input] --> [batch_size, N_output, Dim_input]
+        new_node_set = torch.matmul(C, node_set_input)
+        # [batch_size, N_output, Dim_input] * [batch_size, Dim_input, Dim_output] --> [batch_size, N_output, Dim_output]
+        new_node_set = self.dim_feat_transformation(new_node_set)
+
+        """
+            Calculate new_adj
+        """
+
+        # [batch_size, N_output, N_input] * [batch_size, N_input, N_input] --> [batch_size, N_output, N_input]
+        q_adj = torch.matmul(C, adj)
+
+        # [batch_size, N_output, N_input] * [batch_size, N_input, N_output] --> [batch_size, N_output, N_output]
+        new_adj = self.relu(torch.matmul(q_adj, C.transpose(1, 2)))
+
+        return new_node_set, new_adj
+
+class Memory_Pooling_Layer(nn.Module):
+    """ Memory_Pooling_Layer introduced in the paper 'MEMORY-BASED GRAPH NETWORKS' by Amir Hosein Khasahmadi, etc"""
+
+    ### This layer is for downsampling a node set from N_input to N_output
+    ### Input: [B,N_input,Dim_input]
+    ###         B:batch size, N_input: number of input nodes, Dim_input: dimension of features of input nodes
+    ### Output:[B,N_output,Dim_output]
+    ###         B:batch size, N_output: number of output nodes, Dim_output: dimension of features of output nodes
+
+    def __init__(self, Heads, Dim_input, N_output, Dim_output, use_cuda, Tau=1):
+        """
+            Heads: number of memory heads
+            N_input : number of nodes in input node set
+            Dim_input: number of feature dimension of input nodes
+            N_output : number of the downsampled output nodes
+            Dim_output: number of feature dimension of output nodes
+            Tau: parameter for the student t-distribution mentioned in the paper
+        """
+        super(Memory_Pooling_Layer, self).__init__()
+        self.Heads = Heads
+        self.Dim_input = Dim_input
+        self.N_output = N_output
+        self.Dim_output = Dim_output
+        self.Tau = Tau
+
+        # Randomly initialize centroids
+        self.centroids = nn.Parameter(2 * torch.rand(self.Heads, self.N_output, Dim_input) - 1)
+        self.centroids.requires_grad = True
+
+        self.memory_aggregation = nn.Conv2d(self.Heads, 1, [1, 1])
+        self.dim_feat_transformation = nn.Linear(self.Dim_input, self.Dim_output)
+        self.lrelu = nn.LeakyReLU()
 
     def forward(self, node_set, adj, zero_tensor=torch.tensor([0])):
         """
@@ -112,63 +182,35 @@ class Adaptive_Pooling_Layer(nn.Module):
         node_set_input = node_set
         _, self.N_input, _ = node_set.size()
 
-        if self.with_mask and not (adj == None):
-            graph_sizes = node_set.size()[1] + zero_tensor
-            # size : [batch_size, N_output, N_input]
-            aranger = torch.arange(adj.shape[1]).view(1, 1, -1).repeat(adj.shape[0], self.N_output, 1)
-            # size : [batch_size, N_output, N_input]
-            graph_broad = graph_sizes.view(1, 1, 1).repeat(adj.shape[0], self.N_output, adj.shape[1])
-            self.mask = aranger < graph_broad
-        else:
-            self.mask = None
+        """
+            With (1)(2)(3)(4) we calculate new_node_set
+        """
 
-
-        batch_centroids = torch.mean(node_set,dim=1,keepdim=True)
-
-        # batch_centroids = get_att(node_set,self.W_0,self.emb_dim)
-
-        batch_centroids = batch_centroids.permute(0, 2, 1)
-
-        batch_centroids = torch.relu(torch.nn.functional.linear(batch_centroids, self.input2centroids_1_weight[:, 0:self.N_input],
-                                                     self.input2centroids_1_bias))
-        batch_centroids = self.input2centroids_2(batch_centroids)
-        batch_centroids = self.input2centroids_3(batch_centroids)
-        #batch_centroids = self.input2centroids_4(batch_centroids)
-        #batch_centroids = self.input2centroids_5(batch_centroids)
-        #batch_centroids = self.input2centroids_6(batch_centroids)
-        batch_centroids = batch_centroids.permute(0, 2, 1).view(node_set.size()[0], self.Heads, self.N_output,
-                                                                self.Dim_input)
-
+        # Copy centroids and repeat it in batch
+        ## [h,N_output,Dim_input] --> [batch_size,Heads,N_output,Dim_input]
+        batch_centroids = torch.unsqueeze(self.centroids, 0). \
+            repeat(node_set.shape[0], 1, 1, 1)
         # From initial node set [batch_size, N_input, Dim_input] to size [batch_size, Heads, N_output, N_input, Dim_input]
         node_set = torch.unsqueeze(node_set, 1).repeat(1, batch_centroids.shape[1], 1, 1)
         node_set = torch.unsqueeze(node_set, 2).repeat(1, 1, batch_centroids.shape[2], 1, 1)
         # Broadcast centroids to the same size as that of node set [batch_size, Heads, N_output, N_input, Dim_input]
         batch_centroids = torch.unsqueeze(batch_centroids, 3).repeat(1, 1, 1, node_set.shape[3], 1)
-
         # Compute the distance between original node set to centroids
         # [batch_size, Heads, N_output, N_input]
-        C_heads = self.similarity_compute(node_set, batch_centroids)
-        # dist = torch.sum(torch.abs(node_set - batch_centroids) ** 2, 4)
-        # if self.mask is not None:
-        #    mask_broad = torch.unsqueeze(self.mask, 1).repeat(1, self.Heads, 1, 1)
-        #    dist = dist * mask_broad
+
+        dist = torch.sum(torch.abs(node_set - batch_centroids) ** 2, 4)
+
         # Compute the Matrix C_heads : [batch_size, Heads, N_output, N_input]
-        # C_heads = torch.pow((1 + dist / self.Tau), -(self.Tau + 1) / 2)
+        C_heads = torch.pow((1 + dist / self.Tau), -(self.Tau + 1) / 2)
 
         normalizer = torch.unsqueeze(torch.sum(C_heads, 2), 2)
-        C_heads = C_heads / (normalizer+ 1e-10)
-        if self.mask is not None:
-            mask_broad = torch.unsqueeze(self.mask, 1).repeat(1, self.Heads, 1, 1)
-            C_heads = C_heads * mask_broad
+        C_heads = C_heads / normalizer
+
 
         # Apply pixel-level convolution and softmax to C_heads
         # Get C: [batch_size, N_output, N_input]
         C = self.memory_aggregation(C_heads)
-        # C = torch.softmax(C,1)
-
-        if self.mask is not None:
-            mask_broad = torch.unsqueeze(self.mask, 1)
-            C = C * mask_broad
+        C = torch.softmax(C, 1)
 
         C = C.squeeze(1)
 
@@ -176,27 +218,40 @@ class Adaptive_Pooling_Layer(nn.Module):
         new_node_set = torch.matmul(C, node_set_input)
         # [batch_size, N_output, Dim_input] * [batch_size, Dim_input, Dim_output] --> [batch_size, N_output, Dim_output]
         new_node_set = self.dim_feat_transformation(new_node_set)
-        #new_node_set = self.relu(new_node_set)
+        new_node_set = self.lrelu(new_node_set)
 
         """
             Calculate new_adj
         """
+        # [batch_size, N_output, N_input] * [batch_size, N_input, N_input] --> [batch_size, N_output, N_input]
+        q_adj = torch.matmul(C, adj)
 
-        if not adj is None:
-            # [batch_size, N_output, N_input] * [batch_size, N_input, N_input] --> [batch_size, N_output, N_input]
-            q_adj = torch.matmul(C, adj)
+        # [batch_size, N_output, N_input] * [batch_size, N_input, N_output] --> [batch_size, N_output, N_output]
+        new_adj = torch.matmul(q_adj, C.transpose(1, 2))
 
-            # [batch_size, N_output, N_input] * [batch_size, N_input, N_output] --> [batch_size, N_output, N_output]
-            new_adj = self.relu(torch.matmul(q_adj, C.transpose(1, 2)))
+        return new_node_set, new_adj
 
-            if self.p2p and not (self.N_output == 1):
-                dg = torch.diag((zero_tensor + 1).repeat(new_adj.shape[1]))
-                new_adj = torch.unsqueeze(dg, 0).repeat(new_adj.shape[0], 1, 1)
 
-            return new_node_set, new_adj
+class SAGPool(nn.Module):
+    def __init__(self,in_channels,ratio=0.8,Conv=GCNConv,non_linearity=torch.tanh):
+        super(SAGPool,self).__init__()
+        self.in_channels = in_channels
+        self.ratio = ratio
+        self.score_layer = Conv(in_channels,1)
+        self.non_linearity = non_linearity
+    def forward(self, x, edge_index, edge_attr=None, batch=None):
+        if batch is None:
+            batch = edge_index.new_zeros(x.size(0))
+        #x = x.unsqueeze(-1) if x.dim() == 1 else x
+        score = self.score_layer(x,edge_index).squeeze()
 
-        else:
-            return new_node_set
+        perm = topk(score, self.ratio, batch)
+        x = x[perm] * self.non_linearity(score[perm]).view(-1, 1)
+        batch = batch[perm]
+        edge_index, edge_attr = filter_adj(
+            edge_index, edge_attr, perm, num_nodes=score.size(0))
+
+        return x, edge_index, edge_attr, batch, perm
 
 def glorot(shape, use_cuda):
     """Glorot & Bengio (AISTATS 2010) init."""
@@ -300,10 +355,4 @@ def dense_diff_pool(x, adj, s, mask=None):
     out = torch.matmul(s.transpose(1, 2), x)
     out_adj = torch.matmul(torch.matmul(s.transpose(1, 2), adj), s)
 
-    link_loss = adj - torch.matmul(s, s.transpose(1, 2))
-    link_loss = torch.norm(link_loss, p=2)
-    link_loss = link_loss / adj.numel()
-
-    ent_loss = (-s * torch.log(s + EPS)).sum(dim=-1).mean()
-
-    return out, out_adj, link_loss, ent_loss
+    return out, out_adj

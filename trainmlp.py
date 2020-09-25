@@ -19,14 +19,14 @@ parser = argparse.ArgumentParser()
 # dataset settings
 parser.add_argument('--data_path', type=str, default="./dataset/Preprocess/",
                     help='the path of data.')
-parser.add_argument('--dataset', type=str, default="PEMS-SF",#PEMS-SF", #NATOPS
+parser.add_argument('--dataset', type=str, default="ArticularyWordRecognition",
                     help='time series dataset. Options: See the datasets list')
 parser.add_argument('--gnn', type=str, default="GNN",
                     help='GNN or GIN')
 parser.add_argument('--relation', type=str, default="dynamic",
                     help='dynamic or corr')
-parser.add_argument('--pooling', type=str, default="CoSimPool",
-                    help='CoSimPool or DiffPool')
+parser.add_argument('--pooling', type=str, default="MemPool",
+                    help='CoSimPool or MemPool or DiffPool')
 
 # cuda settings
 parser.add_argument('--no-cuda', action='store_true', default=False,

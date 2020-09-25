@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import pandas as pd
 from utils import config_dataset, corr_matrix
 import numpy as np
-from layer import dense_diff_pool, graph_constructor, Adaptive_Pooling_Layer
+from layer import dense_diff_pool, graph_constructor, Adaptive_Pooling_Layer, Memory_Pooling_Layer
 from gnn_layer import *
 
 class MTPool(nn.Module):
@@ -62,7 +62,7 @@ class MTPool(nn.Module):
         if self.pooling_method == "CoSimPool":
             adaptive_pooling_layers = []
 
-            ap = Adaptive_Pooling_Layer(Heads=2, Dim_input=self.hid, N_output=1, Dim_output=self.hid, use_cuda=self.use_cuda)
+            ap = Adaptive_Pooling_Layer(Heads=4, Dim_input=self.hid, N_output=1, Dim_output=self.hid, use_cuda=self.use_cuda)
             adaptive_pooling_layers.append(ap)   
             # ap = Adaptive_Pooling_Layer(Heads=4, Dim_input=self.hid4, N_output=self.num_nodes//8, Dim_output=self.hid4)
             # adaptive_pooling_layers.append(ap)
@@ -81,6 +81,11 @@ class MTPool(nn.Module):
             self.ap = nn.ModuleList(adaptive_pooling_layers)
         elif self.pooling_method == "DiffPool":
             pass
+        elif self.pooling_method == "MemPool":
+            memory_pooling_layers = []
+            mp = Memory_Pooling_Layer(Heads=4, Dim_input=self.hid, N_output=1, Dim_output=self.hid, use_cuda=self.use_cuda)
+            memory_pooling_layers.append(mp) 
+            self.mp = nn.ModuleList(memory_pooling_layers)  
         else:
             raise Exception("Only support these pooling methods...") 
 
@@ -153,6 +158,10 @@ class MTPool(nn.Module):
                     s = s.cuda()
                 x, adj_prime = dense_diff_pool(x, adj_prime, s)
                 num_nodes = num_nodes//reduce_factor
+        elif self.pooling_method == 'MemPool':
+            A = self.A
+            for layer in self.mp:
+                x, A = layer(x,A)
         else:
             raise Exception("Only support these pooling methods...") 
 
