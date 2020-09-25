@@ -49,7 +49,7 @@ def load_raw_ts(path, dataset, tensor_format=True):
     y_test = np.load(path + 'y_test.npy')
 
     ts = np.concatenate((x_train, x_test), axis=0)
-    ts = np.transpose(ts, axes=(0, 2, 1))
+    # ts = np.transpose(ts, axes=(0, 2, 1))
     labels = np.concatenate((y_train, y_test), axis=0)
     nclass = int(np.amax(labels)) + 1
 
@@ -240,3 +240,108 @@ def dump_embedding(proto_embed, sample_embed, labels, dump_file='./plot/embeddin
             label = str(labels[i])
             line = label + "," + ",".join(["%.4f" % j for j in embed[i].tolist()])
             f.write(line + '\n')
+
+def config_dataset(dataset):
+    if dataset == "ArticularyWordRecognition":
+        train_len = 275
+        test_len = 300
+        num_nodes = 9
+        feature_dim = 144
+        nclass = 25
+    elif dataset == "CharacterTrajectories":
+        train_len = 1422
+        test_len = 1436
+        num_nodes = 3
+        feature_dim = 182
+        nclass = 20
+    elif dataset == "FaceDetection":
+        train_len = 5890
+        test_len = 3524
+        num_nodes = 144
+        feature_dim = 62
+        nclass = 2
+    elif dataset == "Heartbeat":
+        train_len = 204
+        test_len = 205
+        num_nodes = 61
+        feature_dim = 405
+        nclass = 2
+    elif dataset == "MotorImagery":
+        train_len = 278
+        test_len = 100
+        num_nodes = 64
+        feature_dim = 3000
+        nclass = 2
+    elif dataset == "NATOPS":
+        train_len = 180
+        test_len = 180
+        num_nodes = 24
+        feature_dim = 51
+        nclass = 6
+    elif dataset == "PEMS-SF":
+        train_len = 267
+        test_len = 173
+        num_nodes = 963
+        feature_dim = 144
+        nclass = 7
+    elif dataset == "PenDigits":
+        train_len = 7494
+        test_len = 3498
+        num_nodes = 2
+        feature_dim = 8
+        nclass = 10
+    elif dataset == "SelfRegulationSCP2":
+        train_len = 200
+        test_len = 180
+        num_nodes = 7
+        feature_dim = 1152
+        nclass = 2
+    elif dataset == "SpokenArabicDigits":
+        train_len = 6599
+        test_len = 2199
+        num_nodes = 13
+        feature_dim = 93
+        nclass = 10
+    else:
+        raise Exception("Only support these datasets...") 
+
+    return train_len, test_len, num_nodes, feature_dim, nclass
+
+def corr_matrix(train_len, test_len, num_nodes, use_cuda, dataset_path, dataset):
+    A = np.ones((num_nodes, num_nodes), np.int8)
+    A = A / np.sum(A, 0)
+    A_new = np.zeros((train_len, snum_nodes, num_nodes), dtype=np.float32)
+    for i in range(train_len):
+        A_new[i, :, :] = A
+    train_A = torch.from_numpy(A_new)
+    for i in range(train_len):
+        A = np.load(dataset_path+dataset+'/X_train.npy')[i].T
+        d = {}
+        for i in range(A.shape[0]):
+            d[i] = A[i]
+
+        df = pd.DataFrame(d)
+        df_corr = df.corr()
+        train_A[i] = torch.from_numpy(df_corr.to_numpy() / np.sum(df_corr.to_numpy(), 0))
+        if use_cuda:
+            train_A[i] = train_A[i].cuda()
+
+    A = np.ones((num_nodes, num_nodes), np.int8)
+    A = A / np.sum(A, 0)
+    A_new = np.zeros((test_len, num_nodes,num_nodes), dtype=np.float32)
+    for i in range(test_len):
+        A_new[i, :, :] = A
+    test_A = torch.from_numpy(A_new)
+    for i in range(test_len):
+        A = np.load(dataset_path+dataset+'/X_test.npy')[i].T
+        d = {}
+        for i in range(A.shape[0]):
+            d[i] = A[i]
+
+        df = pd.DataFrame(d)
+        df_corr = df.corr()
+        test_A[i] = torch.from_numpy(df_corr.to_numpy() / np.sum(df_corr.to_numpy(), 0))
+        if suse_cuda:
+            test_A[i] = test_A[i].cuda()
+
+    return train_A, test_A

@@ -7,31 +7,32 @@ import time
 import argparse
 
 import torch.optim as optim
-from Modelmlp import TapNet
+from Modelmlp import MTPool
 from utils import *
 import torch.nn.functional as F
 
-datasets = ["ArticularyWordRecognition", "AtrialFibrilation", "BasicMotions", "CharacterTrajectories", "Cricket",
-            "EigenWorms", "Epilepsy", "ERing", "EthanolConcentration", "FingerMovements",
-             "HandMovementDirection", "Handwriting", "Heartbeat", "JapaneseVowels", "Libras",
-            "LSST", "MotorImagery", "NATOPS", "PEMS-SF", "PenDigits",
-            "Phoneme", "RacketSports", "SelfRegulationSCP1", "SelfRegulationSCP2", "SpokenArabicDigits",
-            "StandWalkJump", "UWaveGestureLibrary", "", "", ""]
+datasets = ["ArticularyWordRecognition", "CharacterTrajectories", "FaceDetection", "Heartbeat", "MotorImagery",
+            "NATOPS", "PEMS-SF", "PenDigits", "SelfRegulationSCP2", "SpokenArabicDigits"]
 
 parser = argparse.ArgumentParser()
 
 # dataset settings
-parser.add_argument('--data_path', type=str, default="./dataset/",
+parser.add_argument('--data_path', type=str, default="./dataset/Preprocess/",
                     help='the path of data.')
-parser.add_argument('--use_muse', action='store_true', default=False,
-                    help='whether to use the raw data. Default:False')
-parser.add_argument('--dataset', type=str, default="NATOPS", #NATOPS
+parser.add_argument('--dataset', type=str, default="PEMS-SF",#PEMS-SF", #NATOPS
                     help='time series dataset. Options: See the datasets list')
+parser.add_argument('--gnn', type=str, default="GNN",
+                    help='GNN or GIN')
+parser.add_argument('--relation', type=str, default="dynamic",
+                    help='dynamic or corr')
+parser.add_argument('--pooling', type=str, default="CoSimPool",
+                    help='CoSimPool or DiffPool')
 
 # cuda settings
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='Disables CUDA training.')
 parser.add_argument('--seed', type=int, default=42, help='Random seed.')
+parser.add_argument('--use_cuda', type=int, default=0, help='cpu or gpu.')
 
 # Training parameter settings
 parser.add_argument('--epochs', type=int, default=10000,
@@ -44,109 +45,34 @@ parser.add_argument('--stop_thres', type=float, default=1e-9,
                     help='The stop threshold for the training error. If the difference between training losses '
                          'between epoches are less than the threshold, the training will be stopped. Default:1e-9')
 
-# Model parameters
-parser.add_argument('--use_lstm', type=boolean_string, default=True,
-                    help='whether to use LSTM for feature extraction. Default:False')
-parser.add_argument('--use_cnn', type=boolean_string, default=True,
-                    help='whether to use CNN for feature extraction. Default:False')
-parser.add_argument('--use_rp', type=boolean_string, default=True,
-                    help='Whether to use random projection')
-parser.add_argument('--rp_params', type=str, default='-1,3',
-                    help='Parameters for random projection: number of random projection, '
-                         'sub-dimension for each random projection')
-parser.add_argument('--use_metric', action='store_true', default=False,
-                    help='whether to use the metric learning for class representation. Default:False')
-parser.add_argument('--metric_param', type=float, default=0.000001,
-                    help='Metric parameter for prototype distances between classes. Default:0.000001')
-parser.add_argument('--use_ss', action='store_true', default=False,
-                    help='Use semi-supervised learning.')
-parser.add_argument('--filters', type=str, default="256,256,128",
-                    help='filters used for convolutional network. Default:256,256,128')
-parser.add_argument('--kernels', type=str, default="8,5,3",
-                    help='kernels used for convolutional network. Default:8,5,3')
-parser.add_argument('--dilation', type=int, default=1,
-                    help='the dilation used for the first convolutional layer. '
-                         'If set to -1, use the automatic number. Default:-1')
-parser.add_argument('--layers', type=str, default="500,128",
-                    help='layer settings of mapping function. [Default]: 500,300')
-parser.add_argument('--dropout', type=float, default=0,
-                    help='Dropout rate (1 - keep probability). Default:0.5')
-
-
 args = parser.parse_args()
-args.cuda = not args.no_cuda and torch.cuda.is_available()
+args.cuda = False#not args.no_cuda and torch.cuda.is_available()
 
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 if args.cuda:
     torch.cuda.manual_seed(args.seed)
-args.sparse = True
-args.layers = [int(l) for l in args.layers.split(",")]
-args.kernels = [int(l) for l in args.kernels.split(",")]
-args.filters = [int(l) for l in args.filters.split(",")]
-args.rp_params = [int(l) for l in args.rp_params.split(",")]
-
-if not args.use_lstm and not args.use_cnn:
-    print("Must specify one encoding method: --use_lstm or --use_cnn")
-    print("Program Exiting.")
-    exit(-1)
 
 print("\nParameters:")
 for attr, value in sorted(args.__dict__.items()):
     print("\t{}={}".format(attr.upper(), value))
 
-
-# Load data
-# adj, features, labels, idx_train, idx_val, idx_test = load_data()
 print("Loading dataset", args.dataset, "...")
 # Model and optimizer
-model_type = "TapNet"  # Options: FGCN, ProtoGCN, BiGCN, MotifGCN, InterGCN, TPNet, TapNet
-if model_type == "TapNet":
+model_type = "MTPool"
+if model_type == "MTPool":
 
-    if args.use_muse:
-        features, labels, idx_train, idx_val, idx_test, nclass \
-                                    = load_muse(args.data_path, dataset=args.dataset, sparse=args.sparse)
-    else:
-        features, labels, idx_train, idx_val, idx_test, nclass \
+    features, labels, idx_train, idx_val, idx_test, nclass \
                                     = load_raw_ts(args.data_path, dataset=args.dataset)
 
-    #features, labels, idx_train, idx_val, idx_test, nclass = load_muse(args.data_path, dataset=args.dataset, sparse=True)
-
-    # update random permutation parameter
-    if args.rp_params[0] < 0:
-        # dim = features.shape[1]
-        # if dim <= 6:
-        #     args.rp_params = [dim, math.ceil(dim / 2)]
-        # elif dim > 6 and dim <= 20:
-        #     args.rp_params = [10, 3]
-        # else:
-        #     args.rp_params = [int(dim / 2), 3]
-        dim = features.shape[1]
-        args.rp_params = [3, math.floor(dim * 2 / 3)]
-
-    print("rp_params:", args.rp_params)
-
-    # update dilation parameter
-    if args.dilation == -1:
-        args.dilation = math.floor(features.shape[2] / 64)
-
     print("Data shape:", features.size())
-    model = TapNet(nfeat=features.shape[1],
-                   len_ts=features.shape[2],
-                   layers=args.layers,
-                   nclass=nclass,
-                   dropout=args.dropout,
-                   use_lstm=args.use_lstm,
-                   use_cnn=args.use_cnn,
-                   filters=args.filters,
-                   dilation=args.dilation,
-                   kernels=args.kernels,
-                   use_ss=args.use_ss,
-                   use_metric=args.use_metric,
-                   use_rp=args.use_rp,
-                   rp_params=args.rp_params
+    model = MTPool(use_cuda=args.cuda,
+    			   dataset_path=args.data_path,
+                   dataset=args.dataset,
+                   graph_method=args.gnn,
+                   relation_method=args.relation,
+                   pooling_method=args.pooling
                    )
-
     # cuda
     if args.cuda:
         model.cuda()
@@ -168,36 +94,20 @@ def train():
         model.train()
         optimizer.zero_grad()
 
-        #new_input = (features[idx_train, ], labels[idx_train], idx_train, idx_val, idx_test)
-        output,link_loss= model(input)
+        output = model(input)
 
-        # print(features[idx_train])
-        # print(output[idx_test].max(1)[1].cpu().numpy())
-        # print(labels[idx_train][9])
-        # print([i[0] for i in labels[idx_train].cpu().numpy()])
-        loss_train = F.cross_entropy(output[idx_train], torch.squeeze(labels[idx_train]))
+        loss_train = F.cross_entropy(output[idx_train], torch.squeeze(labels[:len(idx_train)]))
         loss_train = loss_train
-        # if abs(loss_train.item() - loss_list[-1]) < args.stop_thres \
-        #         or loss_train.item() > loss_list[-1]:
-        #     break
-        #
-        # else:
-        #     loss_list.append(loss_train.item())
+
         loss_list.append(loss_train.item())
         acc_train = accuracy(output[idx_train], labels[idx_train])
         loss_train.backward()
         optimizer.step()
 
-        # if not args.fastmode:
-        #     # Evaluate validation set performance separately,
-        #     # deactivates dropout during validation run.
-        #     model.eval()
-        #     output = model(features)
+        output = model(input, test=True)
+        loss_val = F.cross_entropy(output, torch.squeeze(labels[len(idx_train):]))
+        acc_val = accuracy(output, labels[len(idx_train):])
 
-        #print(output[idx_val])
-        loss_val = F.cross_entropy(output[idx_val], torch.squeeze(labels[idx_val]))
-        acc_val = accuracy(output[idx_val], labels[idx_val])
-        # print(output[idx_val])
         print('Epoch: {:04d}'.format(epoch + 1),
               'loss_train: {:.8f}'.format(loss_train.item()),
               'acc_train: {:.4f}'.format(acc_train.item()),
@@ -215,10 +125,10 @@ def train():
 
 # test function
 def test():
-    output,link_loss = model(input,test=True)
+    output = model(input,test=True)
     #print(output[idx_test])
-    loss_test= F.cross_entropy(output[idx_test], torch.squeeze(labels[idx_test]))
-    acc_test = accuracy(output[idx_test], labels[idx_test])
+    loss_test= F.cross_entropy(output, torch.squeeze(labels[len(idx_train):]))
+    acc_test = accuracy(output, labels[len(idx_train):])
     print(args.dataset, "Test set results:",
           "loss= {:.4f}".format(loss_test.item()),
           "accuracy= {:.4f}".format(acc_test.item()))
