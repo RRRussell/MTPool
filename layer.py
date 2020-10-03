@@ -4,18 +4,20 @@ import torch.nn.functional as F
 # from torch_geometric.data import Data as PyGSingleGraphData
 from utils_mp import *
 from torch_geometric.nn import GCNConv
-from torch_geometric.nn.pool.topk_pool import topk,filter_adj
+from torch_geometric.nn.pool.topk_pool import topk, filter_adj
 from torch.nn import Parameter
 
 EPS = 1e-15
 
-def get_att(x,W,emb_dim,batch_size=180):
+
+def get_att(x, W, emb_dim, batch_size=180):
     temp = torch.mean(x, 1).view((batch_size, 1, -1))  # (1, D)
     h_avg = torch.tanh(torch.matmul(temp, W))
-    att = torch.bmm(x, h_avg.transpose(2,1))
-    output = torch.bmm(att.transpose(2,1), x)
+    att = torch.bmm(x, h_avg.transpose(2, 1))
+    output = torch.bmm(att.transpose(2, 1), x)
 
     return output
+
 
 class Adaptive_Pooling_Layer(nn.Module):
     """ Memory_Pooling_Layer introduced in the paper 'MEMORY-BASED GRAPH NETWORKS' by Amir Hosein Khasahmadi, etc"""
@@ -41,8 +43,8 @@ class Adaptive_Pooling_Layer(nn.Module):
         self.Dim_output = Dim_output
         self.use_cuda = use_cuda
 
-        if self.use_cuda:
-            FLAGS.device = "cuda:0"
+        if self.use_cuda == 1:
+            FLAGS.device = "cuda:0,1"
         else:
             FLAGS.device = "cpu"
 
@@ -51,7 +53,7 @@ class Adaptive_Pooling_Layer(nn.Module):
         self.centroids.requires_grad = True
 
         hiden_channels = self.Heads
-        if self.use_cuda:
+        if self.use_cuda == 1:
             self.input2centroids_weight = torch.nn.Parameter(
                 torch.zeros(hiden_channels, 1).float().to(FLAGS.device), requires_grad=True)
             self.input2centroids_bias = torch.nn.Parameter(
@@ -61,6 +63,8 @@ class Adaptive_Pooling_Layer(nn.Module):
                 torch.zeros(hiden_channels, 1).float(), requires_grad=True)
             self.input2centroids_bias = torch.nn.Parameter(
                 torch.zeros(hiden_channels).float(), requires_grad=True)
+
+        self.input2centroids_ = nn.Sequential(nn.Linear(hiden_channels, self.Heads * self.N_output), nn.ReLU())
 
         self.memory_aggregation = nn.Conv2d(self.Heads, 1, [1, 1])
 
@@ -89,11 +93,14 @@ class Adaptive_Pooling_Layer(nn.Module):
 
         # batch_centroids = torch.mean(node_set,dim=1,keepdim=True)
 
-        batch_centroids = get_att(node_set,self.W_0,self.emb_dim,batch_size=batch_size)
+        batch_centroids = get_att(node_set, self.W_0, self.emb_dim, batch_size=batch_size)
 
         batch_centroids = batch_centroids.permute(0, 2, 1)
 
-        batch_centroids = torch.relu(torch.nn.functional.linear(batch_centroids, self.input2centroids_weight, self.input2centroids_bias))
+        batch_centroids = torch.relu(
+            torch.nn.functional.linear(batch_centroids, self.input2centroids_weight, self.input2centroids_bias))
+
+        batch_centroids = self.input2centroids_(batch_centroids)
 
         batch_centroids = batch_centroids.permute(0, 2, 1).view(node_set.size()[0], self.Heads, self.N_output,
                                                                 self.Dim_input)
@@ -134,6 +141,7 @@ class Adaptive_Pooling_Layer(nn.Module):
         new_adj = self.relu(torch.matmul(q_adj, C.transpose(1, 2)))
 
         return new_node_set, new_adj
+
 
 class Memory_Pooling_Layer(nn.Module):
     """ Memory_Pooling_Layer introduced in the paper 'MEMORY-BASED GRAPH NETWORKS' by Amir Hosein Khasahmadi, etc"""
@@ -206,7 +214,6 @@ class Memory_Pooling_Layer(nn.Module):
         normalizer = torch.unsqueeze(torch.sum(C_heads, 2), 2)
         C_heads = C_heads / normalizer
 
-
         # Apply pixel-level convolution and softmax to C_heads
         # Get C: [batch_size, N_output, N_input]
         C = self.memory_aggregation(C_heads)
@@ -232,18 +239,19 @@ class Memory_Pooling_Layer(nn.Module):
         return new_node_set, new_adj
 
 
-class SAGPool(nn.Module):
-    def __init__(self,in_channels,ratio=0.8,Conv=GCNConv,non_linearity=torch.tanh):
-        super(SAGPool,self).__init__()
+class SAG_Pooling_Layer(nn.Module):
+    def __init__(self, in_channels, ratio=0.8, Conv=GCNConv, non_linearity=torch.tanh):
+        super(SAG_Pooling_Layer, self).__init__()
         self.in_channels = in_channels
         self.ratio = ratio
-        self.score_layer = Conv(in_channels,1)
+        self.score_layer = Conv(in_channels, 1)
         self.non_linearity = non_linearity
+
     def forward(self, x, edge_index, edge_attr=None, batch=None):
         if batch is None:
             batch = edge_index.new_zeros(x.size(0))
-        #x = x.unsqueeze(-1) if x.dim() == 1 else x
-        score = self.score_layer(x,edge_index).squeeze()
+        # x = x.unsqueeze(-1) if x.dim() == 1 else x
+        score = self.score_layer(x, edge_index).squeeze()
 
         perm = topk(score, self.ratio, batch)
         x = x[perm] * self.non_linearity(score[perm]).view(-1, 1)
@@ -253,17 +261,19 @@ class SAGPool(nn.Module):
 
         return x, edge_index, edge_attr, batch, perm
 
+
 def glorot(shape, use_cuda):
     """Glorot & Bengio (AISTATS 2010) init."""
-    if use_cuda:
+    if use_cuda == 1:
         rtn = nn.Parameter(torch.Tensor(*shape).cuda())
     else:
         rtn = nn.Parameter(torch.Tensor(*shape))
     nn.init.xavier_normal_(rtn)
     return rtn
 
+
 class graph_constructor(nn.Module):
-    def __init__(self, nnodes, device, use_cuda, dim=40, alpha=3, static_feat=None):
+    def __init__(self, nnodes, device, use_cuda, dim=40, alpha=3, static_feat=None, pool_method=None):
         super(graph_constructor, self).__init__()
         self.nnodes = nnodes
 
@@ -274,17 +284,19 @@ class graph_constructor(nn.Module):
         else:
             self.emb1 = nn.Embedding(nnodes, dim)
             self.emb2 = nn.Embedding(nnodes, dim)
-            self.lin1 = nn.Linear(dim,dim)
-            self.lin2 = nn.Linear(dim,dim)
-        self.weight = glorot([self.nnodes,self.nnodes], use_cuda)#nn.Parameter(torch.Tensor(self.nnodes,self.nnodes))
+            self.lin1 = nn.Linear(dim, dim)
+            self.lin2 = nn.Linear(dim, dim)
+        self.weight = glorot([self.nnodes, self.nnodes],
+                             use_cuda)  # nn.Parameter(torch.Tensor(self.nnodes,self.nnodes))
 
         self.device = device
-        
+
         self.dim = dim
         self.alpha = 3
         self.static_feat = static_feat
+        self.pool_method = pool_method
 
-    def forward(self, idx,x = None):
+    def forward(self, idx, x=None):
         self.option = 2
         if self.option == 1:
 
@@ -298,7 +310,7 @@ class graph_constructor(nn.Module):
             nodevec1 = torch.tanh(self.alpha * self.lin1(nodevec1))
             nodevec2 = torch.tanh(self.alpha * self.lin2(nodevec2))
 
-            a = torch.mm(nodevec1, nodevec2.transpose(1,0))-torch.mm(nodevec2, nodevec1.transpose(1,0))
+            a = torch.mm(nodevec1, nodevec2.transpose(1, 0)) - torch.mm(nodevec2, nodevec1.transpose(1, 0))
             # a = torch.mm(nodevec1, nodevec2.transpose(1, 0))
             b = torch.nn.functional.normalize(self.alpha * a, p=1, dim=1)
             # adj = F.relu(torch.tanh(self.alpha*a))
@@ -317,19 +329,21 @@ class graph_constructor(nn.Module):
             # b = a
             # b = torch.nn.functional.normalize(a,p=1,dim=1)
             x1 = F.normalize(x, p=2, dim=2)
-            a = torch.matmul(x1, x1.transpose(2,1))
+            a = torch.matmul(x1, x1.transpose(2, 1))
             b = torch.matmul(a, self.weight)
             c = torch.nn.functional.normalize(b, p=1, dim=1)
             # zero = torch.zeros_like(b)
             # b = torch.where(b > 0.5, zero, b)
             adj = F.relu(torch.tanh(c))
-#             adj[abs(adj)<0.05] = 0
+            adj[(adj) < 0.1] = 0
+            if self.pool_method=="SAGPool":
+                adj[adj>=0.1] = 1
 
         if self.option == 3:
-            a = torch.matmul(x.transpose(2,1),x)
+            a = torch.matmul(x.transpose(2, 1), x)
             # w = torch.nn.functional.normalize(self.weight, p=1, dim=1)
-            a = torch.nn.functional.normalize(a,p=1,dim=1)
-            adj = F.relu(torch.tanh(self.weight+a))
+            a = torch.nn.functional.normalize(a, p=1, dim=1)
+            adj = F.relu(torch.tanh(self.weight + a))
 
         # mask = torch.zeros(idx.size(0), idx.size(0)).to(self.device)
         # mask.fill_(float('0'))
@@ -338,8 +352,8 @@ class graph_constructor(nn.Module):
         # adj = adj*mask
         return adj
 
-def dense_diff_pool(x, adj, s, mask=None):
 
+def dense_diff_pool(x, adj, s, mask=None):
     x = x.unsqueeze(0) if x.dim() == 2 else x
     adj = adj.unsqueeze(0) if adj.dim() == 2 else adj
     s = s.unsqueeze(0) if s.dim() == 2 else s

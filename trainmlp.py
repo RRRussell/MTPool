@@ -11,22 +11,25 @@ from Modelmlp import MTPool
 from utils import *
 import torch.nn.functional as F
 
-datasets = ["ArticularyWordRecognition", "CharacterTrajectories", "FaceDetection", "Heartbeat", "MotorImagery",
-            "NATOPS", "PEMS-SF", "PenDigits", "SelfRegulationSCP2", "SpokenArabicDigits"]
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+
+datasets = ["AtrialFibrillation", "FingerMovements", "HandMovementDirection", "Handwriting", "Heartbeat",
+            "Libras", "LSST", "MotorImagery", "NATOPS", "PenDigits", "SelfRegulationSCP2", "StandWalkJump"]
 
 parser = argparse.ArgumentParser()
 
 # dataset settings
 parser.add_argument('--data_path', type=str, default="./dataset/Preprocess/",
                     help='the path of data.')
-parser.add_argument('--dataset', type=str, default="ArticularyWordRecognition",
+parser.add_argument('--dataset', type=str, default="HandMovementDirection",
                     help='time series dataset. Options: See the datasets list')
 parser.add_argument('--gnn', type=str, default="GNN",
                     help='GNN or GIN')
 parser.add_argument('--relation', type=str, default="dynamic",
                     help='dynamic or corr')
-parser.add_argument('--pooling', type=str, default="MemPool",
-                    help='CoSimPool or MemPool or DiffPool')
+parser.add_argument('--pooling', type=str, default="SAGPool",
+                    help='CoSimPool or MemPool or DiffPool or SAGPool')
 
 # cuda settings
 parser.add_argument('--no-cuda', action='store_true', default=False,
@@ -35,7 +38,7 @@ parser.add_argument('--seed', type=int, default=42, help='Random seed.')
 parser.add_argument('--use_cuda', type=int, default=0, help='cpu or gpu.')
 
 # Training parameter settings
-parser.add_argument('--epochs', type=int, default=10000,
+parser.add_argument('--epochs', type=int, default=100000,
                     help='Number of epochs to train.')
 parser.add_argument('--lr', type=float, default=1e-5,
                     help='Initial learning rate. default:[0.00001]')
@@ -46,12 +49,17 @@ parser.add_argument('--stop_thres', type=float, default=1e-9,
                          'between epoches are less than the threshold, the training will be stopped. Default:1e-9')
 
 args = parser.parse_args()
-args.cuda = False#not args.no_cuda and torch.cuda.is_available()
+if args.use_cuda==1:
+    args.cuda = torch.cuda.is_available()
+else:
+    args.cuda = False
 
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 if args.cuda:
     torch.cuda.manual_seed(args.seed)
+
+torch.autograd.set_detect_anomaly(True)
 
 print("\nParameters:")
 for attr, value in sorted(args.__dict__.items()):
@@ -67,7 +75,7 @@ if model_type == "MTPool":
 
     print("Data shape:", features.size())
     model = MTPool(use_cuda=args.cuda,
-    			   dataset_path=args.data_path,
+             dataset_path=args.data_path,
                    dataset=args.dataset,
                    graph_method=args.gnn,
                    relation_method=args.relation,
@@ -95,7 +103,8 @@ def train():
         optimizer.zero_grad()
 
         output = model(input)
-
+        # print("output",(output[idx_train]).T)
+        # print("label", (labels[:len(idx_train)]).T)
         loss_train = F.cross_entropy(output[idx_train], torch.squeeze(labels[:len(idx_train)]))
         loss_train = loss_train
 
@@ -105,6 +114,8 @@ def train():
         optimizer.step()
 
         output = model(input, test=True)
+        # print("output", (output.T))
+        # print("label", (labels[len(idx_train):]).T)
         loss_val = F.cross_entropy(output, torch.squeeze(labels[len(idx_train):]))
         acc_val = accuracy(output, labels[len(idx_train):])
 

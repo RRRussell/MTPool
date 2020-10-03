@@ -41,12 +41,25 @@ def loaddata(filename):
     return a
 
 
+def unison_shuffled_copies(a, b):
+    assert a.shape[0]==b.shape[0]
+    p=np.random.permutation(a.shape[0])
+    return a[p], b[p]
+
 def load_raw_ts(path, dataset, tensor_format=True):
     path = path + dataset + "/"
     x_train = np.load(path + 'X_train.npy')
     y_train = np.load(path + 'y_train.npy')
     x_test = np.load(path + 'X_test.npy')
     y_test = np.load(path + 'y_test.npy')
+
+    x_train, y_train = unison_shuffled_copies(x_train, y_train)
+    # x_test, y_test = unison_shuffled_copies(x_test, y_test)
+
+    x_train[np.isnan(x_train)] = 0
+    # y_train[np.isnan(y_train)] = 0
+    x_test[np.isnan(x_test)] = 0
+    # y_test[np.isnan(y_test)] = 0
 
     ts = np.concatenate((x_train, x_test), axis=0)
     # ts = np.transpose(ts, axes=(0, 2, 1))
@@ -248,6 +261,12 @@ def config_dataset(dataset):
         num_nodes = 9
         feature_dim = 144
         nclass = 25
+    elif dataset == "AtrialFibrillation":
+        train_len = 15
+        test_len = 15
+        num_nodes = 2
+        feature_dim = 640
+        nclass = 3
     elif dataset == "CharacterTrajectories":
         train_len = 1422
         test_len = 1436
@@ -260,12 +279,42 @@ def config_dataset(dataset):
         num_nodes = 144
         feature_dim = 62
         nclass = 2
+    elif dataset == "FingerMovements":
+        train_len = 316
+        test_len = 100
+        num_nodes = 28
+        feature_dim = 50
+        nclass = 2
+    elif dataset == "HandMovementDirection":
+        train_len = 160
+        test_len = 74
+        num_nodes = 10
+        feature_dim = 400
+        nclass = 4
+    elif dataset == "Handwriting":
+        train_len = 150
+        test_len = 850
+        num_nodes = 3
+        feature_dim = 152
+        nclass = 26
     elif dataset == "Heartbeat":
         train_len = 204
         test_len = 205
         num_nodes = 61
         feature_dim = 405
         nclass = 2
+    elif dataset == "Libras":
+        train_len = 180
+        test_len = 180
+        num_nodes = 2
+        feature_dim = 45
+        nclass = 15
+    elif dataset == "LSST":
+        train_len = 2459
+        test_len = 2466
+        num_nodes = 6
+        feature_dim = 36
+        nclass = 14
     elif dataset == "MotorImagery":
         train_len = 278
         test_len = 100
@@ -302,6 +351,12 @@ def config_dataset(dataset):
         num_nodes = 13
         feature_dim = 93
         nclass = 10
+    elif dataset == "StandWalkJump":
+        train_len = 12
+        test_len = 15
+        num_nodes = 4
+        feature_dim = 2500
+        nclass = 3
     else:
         raise Exception("Only support these datasets...") 
 
@@ -310,12 +365,12 @@ def config_dataset(dataset):
 def corr_matrix(train_len, test_len, num_nodes, use_cuda, dataset_path, dataset):
     A = np.ones((num_nodes, num_nodes), np.int8)
     A = A / np.sum(A, 0)
-    A_new = np.zeros((train_len, snum_nodes, num_nodes), dtype=np.float32)
+    A_new = np.zeros((train_len, num_nodes, num_nodes), dtype=np.float32)
     for i in range(train_len):
         A_new[i, :, :] = A
     train_A = torch.from_numpy(A_new)
     for i in range(train_len):
-        A = np.load(dataset_path+dataset+'/X_train.npy')[i].T
+        A = np.load(dataset_path+dataset+'/X_train.npy')[i]
         d = {}
         for i in range(A.shape[0]):
             d[i] = A[i]
@@ -323,7 +378,7 @@ def corr_matrix(train_len, test_len, num_nodes, use_cuda, dataset_path, dataset)
         df = pd.DataFrame(d)
         df_corr = df.corr()
         train_A[i] = torch.from_numpy(df_corr.to_numpy() / np.sum(df_corr.to_numpy(), 0))
-        if use_cuda:
+        if use_cuda==1:
             train_A[i] = train_A[i].cuda()
 
     A = np.ones((num_nodes, num_nodes), np.int8)
@@ -333,7 +388,7 @@ def corr_matrix(train_len, test_len, num_nodes, use_cuda, dataset_path, dataset)
         A_new[i, :, :] = A
     test_A = torch.from_numpy(A_new)
     for i in range(test_len):
-        A = np.load(dataset_path+dataset+'/X_test.npy')[i].T
+        A = np.load(dataset_path+dataset+'/X_test.npy')[i]
         d = {}
         for i in range(A.shape[0]):
             d[i] = A[i]
@@ -341,7 +396,11 @@ def corr_matrix(train_len, test_len, num_nodes, use_cuda, dataset_path, dataset)
         df = pd.DataFrame(d)
         df_corr = df.corr()
         test_A[i] = torch.from_numpy(df_corr.to_numpy() / np.sum(df_corr.to_numpy(), 0))
-        if suse_cuda:
+        if use_cuda==1:
             test_A[i] = test_A[i].cuda()
+    # train_A[train_A>0.1]=1
+    # test_A[test_A > 0.1] = 1
+    # np.save("./train_A.npy",train_A)
+    # np.save("./test_A.npy", test_A)
 
     return train_A, test_A
