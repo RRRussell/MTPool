@@ -22,20 +22,20 @@ parser = argparse.ArgumentParser()
 # dataset settings
 parser.add_argument('--data_path', type=str, default="./dataset/Preprocess/",
                     help='the path of data.')
-parser.add_argument('--dataset', type=str, default="HandMovementDirection",
+parser.add_argument('--dataset', type=str, default="StandWalkJump",
                     help='time series dataset. Options: See the datasets list')
 parser.add_argument('--gnn', type=str, default="GNN",
                     help='GNN or GIN')
-parser.add_argument('--relation', type=str, default="dynamic",
-                    help='dynamic or corr')
-parser.add_argument('--pooling', type=str, default="SAGPool",
+parser.add_argument('--relation', type=str, default="corr",
+                    help='dynamic or corr or all_one')
+parser.add_argument('--pooling', type=str, default="CoSimPool",
                     help='CoSimPool or MemPool or DiffPool or SAGPool')
 
 # cuda settings
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='Disables CUDA training.')
 parser.add_argument('--seed', type=int, default=42, help='Random seed.')
-parser.add_argument('--use_cuda', type=int, default=0, help='cpu or gpu.')
+parser.add_argument('--use_cuda', type=int, default=1, help='cpu or gpu.')
 
 # Training parameter settings
 parser.add_argument('--epochs', type=int, default=100000,
@@ -105,6 +105,8 @@ def train():
         output = model(input)
         # print("output",(output[idx_train]).T)
         # print("label", (labels[:len(idx_train)]).T)
+        # y = labels[:len(idx_train)]
+        # torch.save("y.pt",labels)
         loss_train = F.cross_entropy(output[idx_train], torch.squeeze(labels[:len(idx_train)]))
         loss_train = loss_train
 
