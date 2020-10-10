@@ -46,10 +46,13 @@ class MTPool(nn.Module):
         # Dynamic Graph Adjacency Matrix
         elif self.relation_method == "dynamic":
             self.gc = graph_constructor(self.num_nodes, self.device, self.use_cuda, pool_method=pooling_method)
+        elif self.relation_method == "all_one":
+            pass
         else:
+
             raise Exception("Only support these relations...")
 
-            # GNN to extract feature
+        # GNN to extract feature
         self.hid = 128
 
         if self.graph_method == 'GNN':
@@ -130,7 +133,7 @@ class MTPool(nn.Module):
         a2 = self.c2(x.unsqueeze(1)).reshape(x.shape[0], x.shape[1], -1)
         a3 = self.c3(x.unsqueeze(1)).reshape(x.shape[0], x.shape[1], -1)
         x = self.cnn_act(torch.cat([a1, a2, a3], 2))
-        # x = self.batch_norm_cnn(x)
+        x = self.batch_norm_cnn(x)
         #
         # Graph Adjacency Matrix
         if self.relation_method == "dynamic":
@@ -142,7 +145,7 @@ class MTPool(nn.Module):
                 idx = torch.tensor(idx).to(self.device)
             adj = self.gc(idx, c)
             if self.pooling_method != "SAGPool":
-                g = F.normalize(adp, p=1, dim=1)
+                g = F.normalize(adj, p=1, dim=1)
                 self.A = g
             else:
                 self.A = adj
@@ -153,6 +156,8 @@ class MTPool(nn.Module):
             else:
                 # self.A = torch.tensor(np.load("./train_A.npy"))
                 self.A = self.train_A
+        elif self.relation_method == "all_one":
+            self.A = torch.ones(x.shape[0],x.shape[1],x.shape[1])
         else:
             raise Exception("Only support these relation methods...")
 
@@ -170,7 +175,7 @@ class MTPool(nn.Module):
         else:
             raise Exception("Only support these graph methods...")
 
-        # x = self.batch_norm_gnn(x)
+        x = self.batch_norm_gnn(x)
 
         # Pooling
         if self.pooling_method == 'CoSimPool':
@@ -198,7 +203,7 @@ class MTPool(nn.Module):
         elif self.pooling_method == 'SAGPool':
             # Convert from (batch_size, num_nodes, feature_dim) to merged graph (batch_size*num_nodes, feature_dim)
             A = self.A
-            temp_edge = A.to_sparse().indices()
+            temp_edge = A.to_sparse().coalesce().indices()
             edge_index = temp_edge[1:] + temp_edge[0] * self.num_nodes
             # delta = 0
             # A[A>=0.1] = 1
@@ -237,7 +242,9 @@ class MTPool(nn.Module):
             raise Exception("Only support these pooling methods...")
 
         x = x.squeeze(1)
-        # x=self.batch_norm_mlp(x)
+        x=self.batch_norm_mlp(x)
+        # if test:
+        #     torch.save(x,"x.pt")
         y = self.mlp(x)
         y = F.softmax(y, 1)
         # print("y",y.T)
