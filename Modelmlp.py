@@ -88,21 +88,23 @@ class MTPool(nn.Module):
             #     adaptive_pooling_layers.append(ap)
 
             self.ap = nn.ModuleList(adaptive_pooling_layers)
-        
-        elif self.pooling_method == "DiffPool":
-            
-            self.reduce_factor = 2
-            self.gnn_z = []
-            self.gnn_s = []
 
-            num_nodes = self.num_nodes
-            while (num_nodes >= 2):
-                num_clusters = num_nodes // self.reduce_factor
-                z = DenseGCNConv(self.hid,self.hid)
-                s = DenseGCNConv(num_nodes,num_clusters)
-                num_nodes = num_nodes // self.reduce_factor
-                self.gnn_z.append(z)
-                self.gnn_s.append(s)
+        elif self.pooling_method == "DiffPool":
+
+            self.gnn_z = DenseGraphConv(self.hid, self.hid)
+            self.gnn_s = DenseGraphConv(self.hid, 1)
+            # self.reduce_factor = 2
+            # self.gnn_z = []
+            # self.gnn_s = []
+            #
+            # num_nodes = self.num_nodes
+            # while (num_nodes >= 2):
+            #     num_clusters = num_nodes // self.reduce_factor
+            #     z = DenseGraphConv(self.hid, self.hid)
+            #     s = DenseGraphConv(self.hid, num_clusters)
+            #     num_nodes = num_nodes // self.reduce_factor
+            #     self.gnn_z.append(z)
+            #     self.gnn_s.append(s)
 
         elif self.pooling_method == "MemPool":
             memory_pooling_layers = []
@@ -171,7 +173,7 @@ class MTPool(nn.Module):
                 # self.A = torch.tensor(np.load("./train_A.npy"))
                 self.A = self.train_A
         elif self.relation_method == "all_one":
-            self.A = torch.ones(x.shape[0],x.shape[1],x.shape[1])
+            self.A = torch.ones(x.shape[0], x.shape[1], x.shape[1])
         else:
             raise Exception("Only support these relation methods...")
 
@@ -213,16 +215,20 @@ class MTPool(nn.Module):
             #     x, adj_prime = dense_diff_pool(x, adj_prime, s)
             #     num_nodes = num_nodes // reduce_factor
             adj = self.A
-            for i in range(len(self.gnn_z)):
-            	if self.use_cuda:
-            		x = x.cuda
-            		adj = adj.cuda
-            	fz = self.gnn_z[i]
-            	z = fz(x, adj)
-            	fs = self.gnn_s[i]
-            	s = fs(x, adj)
-            	x, adj_prime = dense_diff_pool(z, adj, s)
-            	
+            z = self.gnn_z(x, adj)
+            s = self.gnn_s(x, adj)
+            # s = fs(x, adj)
+            x, adj_prime = dense_diff_pool(z, adj, s)
+            # for i in range(len(self.gnn_z)):
+            #     # if self.use_cuda:
+            #     #     x = x.cuda()
+            #     #     adj = adj.cuda()
+            #     z = self.gnn_z[i](x, adj)
+            #     # z = fz
+            #     s = self.gnn_s[i](x, adj)
+            #     # s = fs(x, adj)
+            #     x, adj_prime = dense_diff_pool(z, adj, s)
+
 
         elif self.pooling_method == 'MemPool':
             A = self.A
@@ -260,7 +266,7 @@ class MTPool(nn.Module):
             batch = batch.repeat(1, self.num_nodes).reshape(-1)
 
             if self.use_cuda:
-                edge_index=edge_index.cuda()
+                edge_index = edge_index.cuda()
                 x = x.cuda()
                 batch = batch.cuda()
 
@@ -270,7 +276,7 @@ class MTPool(nn.Module):
             raise Exception("Only support these pooling methods...")
 
         x = x.squeeze(1)
-        x=self.batch_norm_mlp(x)
+        x = self.batch_norm_mlp(x)
         # if test:
         #     torch.save(x,"x.pt")
         y = self.mlp(x)
