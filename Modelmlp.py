@@ -88,8 +88,22 @@ class MTPool(nn.Module):
             #     adaptive_pooling_layers.append(ap)
 
             self.ap = nn.ModuleList(adaptive_pooling_layers)
+        
         elif self.pooling_method == "DiffPool":
-            pass
+            
+            self.reduce_factor = 2
+            self.gnn_z = []
+            self.gnn_s = []
+
+            num_nodes = self.num_nodes
+            while (num_nodes >= 2):
+                num_clusters = num_nodes // self.reduce_factor
+                z = DenseGCNConv(self.hid,self.hid)
+                s = DenseGCNConv(num_nodes,num_clusters)
+                num_nodes = num_nodes // self.reduce_factor
+                self.gnn_z.append(z)
+                self.gnn_s.append(s)
+
         elif self.pooling_method == "MemPool":
             memory_pooling_layers = []
             mp = Memory_Pooling_Layer(Heads=4, Dim_input=self.hid, N_output=1, Dim_output=self.hid,
@@ -183,19 +197,33 @@ class MTPool(nn.Module):
             for layer in self.ap:
                 x, A = layer(x, A)
         elif self.pooling_method == 'DiffPool':
-            num_nodes = self.num_nodes
-            reduce_factor = 2
-            adj_prime = self.A
-            while (num_nodes >= 2):
-                num_clusters = num_nodes // reduce_factor
-                if test:
-                    s = torch.randn((self.test_len, num_nodes, num_clusters))
-                else:
-                    s = torch.randn((self.train_len, num_nodes, num_clusters))
-                if self.use_cuda:
-                    s = s.cuda()
-                x, adj_prime = dense_diff_pool(x, adj_prime, s)
-                num_nodes = num_nodes // reduce_factor
+            # num_nodes = self.num_nodes
+            # reduce_factor = self.reduce_factor
+            # adj_prime = self.A
+            # while (num_nodes >= 2):
+            #     num_clusters = num_nodes // reduce_factor
+            #     z = self.gnn_z(x, a)
+            #     s = F.softmax(self.gnn_s(x, a), dim=1)
+            #     # if test:
+            #         # s = torch.randn((self.test_len, num_nodes, num_clusters))
+            #     # else:
+            #         # s = torch.randn((self.train_len, num_nodes, num_clusters))
+            #     if self.use_cuda:
+            #         s = s.cuda()
+            #     x, adj_prime = dense_diff_pool(x, adj_prime, s)
+            #     num_nodes = num_nodes // reduce_factor
+            adj = self.A
+            for i in range(len(self.gnn_z)):
+            	if self.use_cuda:
+            		x = x.cuda
+            		adj = adj.cuda
+            	fz = self.gnn_z[i]
+            	z = fz(x, adj)
+            	fs = self.gnn_s[i]
+            	s = fs(x, adj)
+            	x, adj_prime = dense_diff_pool(z, adj, s)
+            	
+
         elif self.pooling_method == 'MemPool':
             A = self.A
             for layer in self.mp:
