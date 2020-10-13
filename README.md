@@ -1,5 +1,6 @@
 # Pooling-for-MTS-classification
-Multivariate time series classification using graph pooling
+Multivariate time series classification using graph pooling.
+
 This repository is the official implementation of [Multivariate Time Series Classification with Hierarchical Variational Graph Pooling](https://arxiv.org/abs/2010.05649). 
 
 ## Requirements
