@@ -32,6 +32,7 @@ We conduct experiments on ten benchmark datasets for multivariate time series cl
 | PenDigits             | 7494       | 3498      | 2          | 8             | 10      |
 | SelfRegulationSCP2    | 200        | 180       | 7          | 1152          | 2       |
 | StandWalkJump         | 12         | 15        | 4          | 2500          | 3       |
+
 Dataset can be downloaded from http://timeseriesclassification.com.
 
 #### Preprocessing
@@ -42,7 +43,7 @@ We convert the original data into numpy array format and use the original split 
 To train and test the model(s) in the paper, run this code (an example):
 
 ```
-python trainmlp.py
+python train.py
 ```
 
 ## Results
@@ -57,14 +58,12 @@ Once you've successfully run the baseline system, you'll likely want to improve 
 
 To help you get started in modifying the baseline system to incorporate your new idea -- or incorporating parts of the baseline system's code into your own system -- we provide an overview of how the code is organized:
 
-1. [Baseline_models/X_CNN.py] - Code that defines how to use CNN to extract long-term trends.
+1. [Model.py] - The core PyTorch model code. If you want to change the overall structure of MTPool, it is recommended to start with this file.
 
-2. [Baseline_models/delta_X_CNN.py] - Code that defines how to use CNN to extract short-term fluctuations.
+2. [utils.py] - Code containing data preprocessing and other operations.
 
-3. [TripletNet.py] - The core PyTorch model code. If you want to change the overall structure of PFNet, it is recommended to start with this file.
+3. [layer.py] - Code that defines different pooling layers.
 
-4. [utils.py] - Code containing data preprocessing and other operations. Note that if the model is PFNet, there will be some differences in the data interface from other conventional models.
-
-5. [Optim.py] - Code related to the implementation of the optimizer, such as SGD, Adam, etc.
+4. [gnn_layer.py] - Code related to the implementation of the GNNs.
 
 6. [train.py] - The main driver script that uses all of the above and calls PyTorch to do the main training and testing loops.
