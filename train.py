@@ -7,7 +7,7 @@ import time
 import argparse
 
 import torch.optim as optim
-from Modelmlp import MTPool
+from Model import MTPool
 from utils import *
 import torch.nn.functional as F
 
