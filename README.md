@@ -1,7 +1,7 @@
 # Pooling-for-MTS-classification
 Multivariate time series classification using graph pooling.
 
-This repository is the official implementation of [Multivariate Time Series Classification with Hierarchical Variational Graph Pooling](https://arxiv.org/abs/2010.05649). 
+This repository is the official implementation of [Multivariate time-series classification with hierarchical variational graph pooling](https://www.sciencedirect.com/science/article/abs/pii/S0893608022002970). 
 
 ## Requirements
 - Python 3.6.2
